@@ -61,10 +61,18 @@ async function write(client, address, functionName, args) {
     const est = await client.estimateTransactionFeesForWrite({ address, functionName, args });
     fees = { distribution: est.distribution, feeValue: est.feeValue };
   } catch (e) {
-    console.log('fee estimate skipped:', e.message.slice(0, 80));
+    console.log('fee estimate (write) failed, using baseline x10:', e.message.slice(0, 80));
+    try {
+      const est2 = await client.estimateTransactionFees();
+      fees = { distribution: est2.distribution, feeValue: est2.feeValue * 10n };
+    } catch (e2) {
+      console.log('baseline fee estimate also failed:', e2.message.slice(0, 80));
+    }
   }
-  const hash = await client.writeContract({ address, functionName, args, value: 0n, ...(fees ? { fees } : {}) });
+  if (!fees) throw new Error('no fees available for ' + functionName + ' — refusing a zero-fee tx');
+  const hash = await client.writeContract({ address, functionName, args, value: 0n, fees });
   console.log(functionName, 'tx:', hash);
+  await client.waitForTransactionReceipt({ hash, waitUntil: 'finalized' });
   return hash;
 }
 
@@ -81,7 +89,19 @@ async function write(client, address, functionName, args) {
 
   if (cmd === 'deploy') {
     const code = fs.readFileSync(CONTRACT_FILE, 'utf8');
-    const hash = await buyerClient.deployContract({ code, args: [] });
+    // Studio Next rejects zero-fee deploys (FeeValueMustBeNonZero) — estimate
+    // and scale up: a deploy is heavier than the baseline tx the estimator
+    // prices, and test GEN is free via sim_fundAccount.
+    let fees;
+    try {
+      const est = await buyerClient.estimateTransactionFees();
+      const scaled = est.feeValue * 10n;
+      fees = { distribution: est.distribution, feeValue: scaled };
+      console.log('deploy fee estimate:', est.feeValue.toString(), 'scaled:', scaled.toString());
+    } catch (e) {
+      console.log('deploy fee estimate skipped:', e.message.slice(0, 80));
+    }
+    const hash = await buyerClient.deployContract({ code, args: [], ...(fees ? { fees } : {}) });
     console.log('deploy tx:', hash);
     const receipt = await buyerClient.waitForTransactionReceipt({
       hash,
@@ -98,11 +118,18 @@ async function write(client, address, functionName, args) {
 
   if (cmd === 'run') {
     const court = arg;
-    if (!court) throw new Error('usage: node scripts/demo_run.js run <contractAddress>');
-    await write(buyerClient, court, 'open_case', [seller.address, AGREEMENT, EVIDENCE_URL, '50 USDC (x402)']);
-    const count = await buyerClient.readContract({ address: court, functionName: 'get_case_count', args: [] });
-    const caseId = String(count);
-    console.log('case id:', caseId);
+    if (!court) throw new Error('usage: node scripts/demo_run.js run <contractAddress> [caseId]');
+    const resumeCase = process.argv[4];
+    let caseId;
+    if (resumeCase) {
+      caseId = resumeCase;
+      console.log('resuming existing case:', caseId);
+    } else {
+      await write(buyerClient, court, 'open_case', [seller.address, AGREEMENT, EVIDENCE_URL, '50 USDC (x402)']);
+      const count = await buyerClient.readContract({ address: court, functionName: 'get_case_count', args: [] });
+      caseId = String(count);
+      console.log('case id:', caseId);
+    }
     await write(buyerClient, court, 'submit_claim', [caseId, BUYER_CLAIM]);
     await write(sellerClient, court, 'submit_claim', [caseId, SELLER_CLAIM]);
     let c = await buyerClient.readContract({ address: court, functionName: 'get_case', args: [caseId] });
