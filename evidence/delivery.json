@@ -1,0 +1,1 @@
+{"data":null,"error":"feed_offline","message":"upstream provider unavailable - no price data served","note":"This file is the disputed delivery in the AgentDealCourt demo: the agreement promised a BTC/ETH price feed with status ok and numeric prices; this is what the seller's endpoint actually returned.","served_at":"2026-11-21T00:00:00Z","status":"error"}
